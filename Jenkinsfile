@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        PROJECT_ID = 'seventh-reef-463513-t3'
-        CLUSTER_NAME = 'demo'
-        LOCATION = 'us-west2-a'
-        CREDENTIALS_ID = 'gcp-service-account'
+        registryUrl = 'docker.io'
+        registryCredential = 'docker-login'  // ID configured in Jenkins Credentials
+        dockerImageName = 'sonalikurade/devops'
+        dockerImage = ''
     }
 
     stages {
@@ -21,41 +21,43 @@ pipeline {
             }
         }
 
-        stage('Create Dockerfile') {
-    steps {
-        writeFile file: 'Dockerfile', text: '''
-FROM eclipse-temurin:17-jdk
-WORKDIR /app
-COPY target/*.jar app.jar
-ENTRYPOINT ["java", "-jar", "app.jar"]
-'''
-    }
-}
-
-                stage('Docker Build') {
+        stage('Docker Build') {
             steps {
-                sh 'docker build -t sonalikurade/devops:latest .'
+                script {
+                     def dockerImageName = "sonalikurade/devops:latest"
+                     def dockerImage = docker.build(dockerImageName, "-f .devcontainer/Dockerfile .")
+
+                     docker.withRegistry('https://index.docker.io/v1/', 'docker-login') {
+                         dockerImage.push()
+                     }
+                }
             }
+         
         }
+        
+ 
 
-        stage('Push to Docker Hub') {
+        stage('Deploy to Kubernetes') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
-                    sh 'docker push sonalikurade/devops:latest'
+                withCredentials([file(credentialsId: 'gcp-login', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                    sh '''
+                        echo "Activating GCP service account..."
+                        gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+
+                        echo "Getting GKE credentials..."
+                        gcloud container clusters get-credentials my-cluster \
+                          --zone us-west1-b \
+                          --project seventh-reef-463513-t3
+
+                        echo "Applying Kubernetes manifests..."
+                        kubectl apply -f ./k8s/db.yml --validate=false
+                        kubectl apply -f ./k8s/petclinic.yml --validate=false
+                        echo "Exposing petclinic as LoadBalancer..."
+                kubectl expose deployment petclinic --type=LoadBalancer --name=petclinic --port=80 --target-port=8080 || echo "Service might already exist"
+            
+                    '''
                 }
             }
         }
-
-
-        stage ('K8S Deploy') {
-          steps {
-            script {
-                withKubeConfig([credentialsId: 'k8s']) {
-                sh ('kubectl apply -f  ./k8s/deployment.yaml')
-                }
-            }
-        }
-     }
     }
 }
